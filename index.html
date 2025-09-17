@@ -4199,7 +4199,7 @@
                     } else if (msg.type === 'emoji_pack') {
                         const match = msg.content.match(/\[emoji:(.*?)\]/);
                         if (match) {
-                            content = `[emoji:"${match[1]}"]`;
+                            content = `[emoji:${match[1]}]`;
                             msgTokens = content.length * 2;
                         }
                     } else if (msg.type === 'ledger_summary') {
