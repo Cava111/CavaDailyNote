@@ -4070,7 +4070,7 @@
                             if (sendRole) backupSystemInfo += `- Your Role: ${character.name}\n`;
                             backupSystemInfo += `\n---\n\n`;
                             const backupSystemPrefix = userProfileString + backupSystemInfo;
-                            const systemPrompt = systemPrefix + `${character.prompt}\n\n你的任务是作为聊天伙伴对用户的记账和聊天内容做出回应。你的回应需要符合你的人设。如果用户发了图片或表情包，你要像能看到一样进行评论。你也可以发送表情包，格式为[emoji:表情包名称]，可用的表情包有：${state.emojiPacks.map(e => e.name).join('、')}。请自然地进行对话。规则如下：\n1. 发送多条消息请用换行符(\\n)分隔，这会创建多个聊天气泡。\n2. 在单条消息内部换行，请直接使用 <br> 标签。`;
+                            const backupSystemPrompt = systemPrefix + `${character.prompt}\n\n你的任务是作为聊天伙伴对用户的记账和聊天内容做出回应。你的回应需要符合你的人设。如果用户发了图片或表情包，你要像能看到一样进行评论。你也可以发送表情包，格式为[emoji:表情包名称]，可用的表情包有：${state.emojiPacks.map(e => e.name).join('、')}。请自然地进行对话。规则如下：\n1. 发送多条消息请用换行符(\\n)分隔，这会创建多个聊天气泡。\n2. 在单条消息内部换行，请直接使用 <br> 标签。`;
                             // 尝试调用备用API
                             responseText = await callAPI(backupProxy, backupSystemPrompt, history, character.backupModel);
 
