@@ -4089,7 +4089,6 @@
                 }
             }
 
-// 粘贴到你的代码里，替换掉旧的 processAIResponse 函数
 async function processAIResponse(text, bubbleId, character) {
     const aiReplies = text.split('\n').map(r => r.trim()).filter(Boolean);
 
@@ -4102,7 +4101,6 @@ async function processAIResponse(text, bubbleId, character) {
                 await new Promise(resolve => setTimeout(resolve, Math.random() * 600 + 200));
             }
 
-            // --- 智能拆包逻辑开始 ---
             const emojiRegex = /\[emoji:(.*?)\]/;
             const emojiMatch = reply.match(emojiRegex);
             
@@ -4110,7 +4108,6 @@ async function processAIResponse(text, bubbleId, character) {
                 const emojiName = emojiMatch[1];
                 const emoji = state.emojiPacks.find(e => e.name === emojiName);
 
-                // 1. 先把表情包发出来
                 if (emoji) {
                     if (isFirstMessage) {
                         await updateThinkingBubbleAsEmoji(bubbleId, emoji, character.id);
@@ -4119,22 +4116,20 @@ async function processAIResponse(text, bubbleId, character) {
                     }
                 }
 
-                // 2. 检查表情包后面还有没有文字
                 const remainingText = reply.replace(emojiRegex, '').trim();
                 if (remainingText) {
-                    // 如果有，就再发一条文字消息！
                     await addAIMessage(remainingText, character.id);
                 }
-            } else { // 如果这一行完全没有表情包，就是纯文本
+            } else {
                 if (isFirstMessage) {
-                    await updateThinkingBubble(reply, character.id);
+                    await updateThinkingBubble(bubbleId, reply, character.id);  // 修复：添加 bubbleId
                 } else {
                     await addAIMessage(reply, character.id);
                 }
             }
         }
     } else {
-        await updateThinkingBubble("[AI没有返回任何内容]", character.id, true);
+        await updateThinkingBubble(bubbleId, "[AI没有返回任何内容]", character.id, true);  // 修复：添加 bubbleId
     }
 }
 
