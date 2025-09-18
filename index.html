@@ -4089,55 +4089,54 @@
                 }
             }
 
-            // 粘贴到你的代码里，替换掉旧的 processAIResponse 函数
+// 粘贴到你的代码里，替换掉旧的 processAIResponse 函数
 async function processAIResponse(text, bubbleId, character) {
-    const processedText = text.replace(/\[emoji:(.*?)\]/g, (match, emojiName) => {
-        const emoji = state.emojiPacks.find(e => e.name === emojiName);
-        return emoji ? `<EMOJI_PLACEHOLDER:${emoji.id}>` : match;
-    });
-
-    const aiReplies = processedText.split('\n').map(r => r.trim()).filter(Boolean);
+    const aiReplies = text.split('\n').map(r => r.trim()).filter(Boolean);
 
     if (aiReplies.length > 0) {
-        // 使用一个统一的循环来处理所有回复
         for (let i = 0; i < aiReplies.length; i++) {
-            const reply = aiReplies[i];
+            let reply = aiReplies[i];
             const isFirstMessage = (i === 0);
 
-            // 随机延迟，模拟打字感
             if (!isFirstMessage) {
                 await new Promise(resolve => setTimeout(resolve, Math.random() * 600 + 200));
             }
 
-            // 判断当前这条回复是否是表情包
-            if (reply.includes('<EMOJI_PLACEHOLDER:')) {
-                const emojiMatch = reply.match(/<EMOJI_PLACEHOLDER:(\d+)>/);
-                if (emojiMatch) {
-                    const emojiId = parseInt(emojiMatch[1]);
-                    const emoji = state.emojiPacks.find(e => e.id === emojiId);
-                    if (emoji) {
-                        // 如果是第一条消息，就替换"思考中"气泡
-                        if (isFirstMessage) {
-                            await updateThinkingBubbleAsEmoji(bubbleId, emoji, character.id);
-                        } else { // 否则，就新增一个表情包气泡
-                            await addAIEmojiMessage(emoji, character.id);
-                        }
+            // --- 智能拆包逻辑开始 ---
+            const emojiRegex = /\[emoji:(.*?)\]/;
+            const emojiMatch = reply.match(emojiRegex);
+            
+            if (emojiMatch) {
+                const emojiName = emojiMatch[1];
+                const emoji = state.emojiPacks.find(e => e.name === emojiName);
+
+                // 1. 先把表情包发出来
+                if (emoji) {
+                    if (isFirstMessage) {
+                        await updateThinkingBubbleAsEmoji(bubbleId, emoji, character.id);
+                    } else {
+                        await addAIEmojiMessage(emoji, character.id);
                     }
                 }
-            } else { // 如果是普通文本
-                // 如果是第一条消息，就替换"思考中"气泡
+
+                // 2. 检查表情包后面还有没有文字
+                const remainingText = reply.replace(emojiRegex, '').trim();
+                if (remainingText) {
+                    // 如果有，就再发一条文字消息！
+                    await addAIMessage(remainingText, character.id);
+                }
+            } else { // 如果这一行完全没有表情包，就是纯文本
                 if (isFirstMessage) {
-                    await updateThinkingBubble(bubbleId, reply, character.id);
-                } else { // 否则，就新增一个文本气泡
+                    await updateThinkingBubble(reply, character.id);
+                } else {
                     await addAIMessage(reply, character.id);
                 }
             }
         }
     } else {
-        await updateThinkingBubble(bubbleId, "[AI没有返回任何内容]", character.id, true);
+        await updateThinkingBubble("[AI没有返回任何内容]", character.id, true);
     }
 }
-
 
             // 添加新函数：
             async function updateThinkingBubbleAsEmoji(bubbleId, emoji, senderId) {
@@ -4213,9 +4212,7 @@ async function processAIResponse(text, bubbleId, character) {
                         content = (systemPromptSettings.pie || DEFAULT_SYSTEM_PROMPTS.pie).replace('{data}', msg.content);
                         msgTokens = content.length * 2;
                     } else {
-                        // --- ！！！核心修改在这里！！！ ---
-                        // 我们把原始消息里的换行符 \n 替换成 <br> 文本，再发给 AI
-                        content = msg.content.replace(/\n/g, '<br>');
+                        content = msg.content;
                         msgTokens = content.length * 2;
                     }
 
