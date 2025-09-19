@@ -4340,13 +4340,16 @@
                 let currentTokens = 0;
                 const reversedMessages = [...state.messages].reverse();
                 const { systemPromptSettings } = state.config;
-                let lastDateStr = null; // 用来记住上一条已成功添加的消息的日期
+
+                // 这个变量现在用来记录“上一个已处理消息的日期”
+                let processedDateStr = null;
 
                 for (const msg of reversedMessages) {
                     let content;
                     let msgTokens = 0;
                     const role = msg.role === 'assistant' ? 'assistant' : 'user';
 
+                    // --- 这部分解析消息内容的代码保持不变 ---
                     if (msg.type === 'transaction') {
                         const t = state.transactions.find(t => t.id === msg.relatedId);
                         if (!t) continue;
@@ -4385,47 +4388,52 @@
                         content = msg.content;
                         msgTokens = content.length * 2;
                     }
+                    // --- 消息解析结束 ---
 
-                    // --- 智能时间戳的核心逻辑 ---
+                    // ==================== 全新的智能时间戳逻辑 ====================
                     const msgDate = new Date(msg.timestamp);
-                    const currentDateStr = `${msgDate.getFullYear()}/${String(msgDate.getMonth() + 1).padStart(2, '0')}/${String(msgDate.getDate()).padStart(2, '0')}`;
+                    const currentMsgDateStr = `${msgDate.getFullYear()}-${String(msgDate.getMonth() + 1).padStart(2, '0')}-${String(msgDate.getDate()).padStart(2, '0')}`;
 
                     let dateMarkerContent = null;
                     let dateMarkerTokens = 0;
 
-                    // 检查当前消息的日期是否和上一条不同，如果是，则准备插入分割线
-                    if (currentDateStr !== lastDateStr) {
-                        dateMarkerContent = `\n--- ${currentDateStr} ---\n`;
+                    // 检查：如果这不是循环的第一个消息，并且当前消息的日期与上一个处理的消息日期不同
+                    if (processedDateStr && currentMsgDateStr !== processedDateStr) {
+                        // 那么，我们就在此插入一个分割线，内容是“上一个处理的日期”
+                        const prevDate = new Date(processedDateStr);
+                        const month = prevDate.getMonth() + 1;
+                        const day = prevDate.getDate();
+                        dateMarkerContent = `\n——以下是${month}月${day}日的消息——\n`;
                         dateMarkerTokens = dateMarkerContent.length * 2;
                     }
 
                     // 检查加上分割线（如果需要）和消息本身后，是否会超出token限制
-                    if (currentTokens + msgTokens + dateMarkerTokens <= maxTokens) {
-                        // 先添加消息本身
-                        const finalRole = (msg.type !== 'text' && msg.role === 'user') ? 'user' : role;
-                        const messageForContext = { role: finalRole, content };
-
-                        if (finalRole === 'assistant' && msg.senderId) {
-                            const character = state.characters.find(c => c.id === msg.senderId);
-                            if (character) {
-                                messageForContext.character_name = character.name;
-                            }
-                        }
-                        context.unshift(messageForContext);
-                        currentTokens += msgTokens;
-
-                        // 如果准备了分割线，就把它添加到消息的上方
-                        if (dateMarkerContent) {
-                            context.unshift({ role: 'system', content: dateMarkerContent });
-                            currentTokens += dateMarkerTokens;
-                        }
-
-                        // 成功添加后，更新“上一条消息的日期”
-                        lastDateStr = currentDateStr;
-                    } else {
-                        // 如果空间不足，则停止添加任何新消息
-                        break;
+                    if (currentTokens + msgTokens + dateMarkerTokens > maxTokens) {
+                        break; // 如果空间不足，则停止添加任何新消息
                     }
+
+                    // 如果需要插入分割线，先把它放进上下文数组的最前面
+                    if (dateMarkerContent) {
+                        context.unshift({ role: 'system', content: dateMarkerContent });
+                        currentTokens += dateMarkerTokens;
+                    }
+
+                    // 接着，把当前这条消息放进上下文数组的最前面
+                    const finalRole = (msg.type !== 'text' && msg.role === 'user') ? 'user' : role;
+                    const messageForContext = { role: finalRole, content };
+
+                    if (finalRole === 'assistant' && msg.senderId) {
+                        const character = state.characters.find(c => c.id === msg.senderId);
+                        if (character) {
+                            messageForContext.name = character.name; // 使用 name 字段
+                        }
+                    }
+                    context.unshift(messageForContext);
+                    currentTokens += msgTokens;
+
+                    // 最后，更新“已处理日期”，为下一次循环做准备
+                    processedDateStr = currentMsgDateStr;
+                    // ===============================================================
                 }
                 return { context, tokens: currentTokens };
             }
