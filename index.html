@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Cava记事本1.3.1beta</title>
+    <title>Cava记事本1.3.2beta</title>
     <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.css">
@@ -3185,6 +3186,60 @@
                 <div class="form-group"><label>备用API (可选)</label><select id="character-editor-backup-proxy"></select>
                 </div>
                 <div class="form-group"><label>备用模型</label><select id="character-editor-backup-model"></select></div>
+                <div class="form-group"
+                    style="margin-top:20px; border-top: 1px dashed var(--border-color); padding-top:15px;">
+                    <label id="toggle-advanced-settings-btn"
+                        style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+                        <span>高级参数设置</span>
+                        <span id="char-advanced-arrow" style="font-size: 18px; font-weight: bold;">▼</span>
+                    </label>
+                </div>
+
+                <div id="character-advanced-settings"
+                    style="display: none; padding-left: 10px; padding-right: 10px; border-left: 2px solid var(--accent-primary);">
+
+                    <div class="form-group">
+                        <label>参数预设模式</label>
+                        <select id="character-param-mode"
+                            style="width:100%; padding: 8px; border-radius: 5px; border: 1px solid var(--accent-primary);">
+                            <option value="default">默认 (均衡)</option>
+                            <option value="assist">协助模式 (精准稳定)</option>
+                            <option value="companion">陪伴模式 (创意发散)</option>
+                            <option value="custom">自定义参数</option>
+                        </select>
+                    </div>
+
+                    <div id="character-custom-params" style="display: none;">
+                        <div class="form-group">
+                            <label>温度 (Temperature): <span id="char-temp-value">0.8</span></label>
+                            <input type="range" id="char-temperature" min="0" max="2" step="0.1" value="0.8"
+                                class="ai-slider">
+                        </div>
+
+                        <div class="form-group">
+                            <label>Top P: <span id="char-topp-value">0.95</span></label>
+                            <input type="range" id="char-top-p" min="0" max="1" step="0.05" value="0.95"
+                                class="ai-slider">
+                        </div>
+
+                        <div class="form-group">
+                            <label>Top K: <span id="char-topk-value">0</span></label>
+                            <input type="range" id="char-top-k" min="0" max="100" step="1" value="0" class="ai-slider">
+                        </div>
+
+                        <div class="form-group">
+                            <label>频率惩罚 (Frequency): <span id="char-freq-value">0</span></label>
+                            <input type="range" id="char-freq-penalty" min="-2" max="2" step="0.1" value="0"
+                                class="ai-slider">
+                        </div>
+
+                        <div class="form-group">
+                            <label>存在惩罚 (Presence): <span id="char-pres-value">0</span></label>
+                            <input type="range" id="char-presence-penalty" min="-2" max="2" step="0.1" value="0"
+                                class="ai-slider">
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer"><button class="cancel-btn">取消</button><button class="save-btn">保存</button></div>
         </div>
@@ -3434,7 +3489,6 @@
             }
 
             async function loadDataFromDB() {
-                // 1. 'emojiPacks' 已被正确添加
                 const [config, proxies, characters, messages, transactions, currencies, schedules, emojiPacks] = await Promise.all([
                     db.appConfig.get('main'),
                     db.apiProxies.toArray(),
@@ -3446,16 +3500,28 @@
                     db.emojiPacks.toArray()
                 ]);
 
-                // 2. 删除了导致所有错误的重复代码和多余括号
-
                 const baseConfig = { id: 'main', chatName: '我的记事本', chatAvatar: DEFAULT_AVATAR, maxTokens: 4096, background: '', theme: 'default', userId: '', userGender: '', userBio: '', systemPromptSettings: DEFAULT_SYSTEM_PROMPTS };
                 state.config = { ...baseConfig, ...config, systemPromptSettings: { ...DEFAULT_SYSTEM_PROMPTS, ...(config ? config.systemPromptSettings : {}) } };
+
+                // --- 核心修改在这里！---
+                // 我们为每个角色都加上一个 aiParams 口袋，如果它还没有的话
+                state.characters = characters.map(char => ({
+                    ...char,
+                    aiParams: char.aiParams || {
+                        mode: 'default', // 'default', 'assist', 'companion', 'custom'
+                        temperature: 0.8,
+                        topP: 0.95,
+                        topK: 0,
+                        frequencyPenalty: 0,
+                        presencePenalty: 0,
+                    }
+                }));
+
                 state.proxies = proxies;
-                state.characters = characters;
                 state.messages = messages;
                 state.transactions = transactions;
                 state.schedules = schedules || [];
-                state.emojiPacks = emojiPacks || []; // 3. 这里也已为你正确处理了新数据
+                state.emojiPacks = emojiPacks || [];
 
                 if (currencies.length === 0) {
                     const preset = { code: 'HKD', name: '港币', rate: 0.92 };
@@ -3465,7 +3531,6 @@
                     state.currencies = currencies;
                 }
             }
-
 
             function applyConfigToUI() {
                 ELS.chatHeaderTitle.textContent = state.config.chatName;
@@ -3493,6 +3558,111 @@
                 ELS.navItems.forEach(item => item.classList.toggle('active', item.dataset.page === pageId));
                 if (pageId === 'ledger-screen') renderLedger();
                 if (pageId === 'schedule-screen') renderSchedules();
+            }
+
+            // 这个函数用来展开和收起“高级设置”
+            function toggleCharacterAdvancedSettings() {
+                const settingsDiv = document.getElementById('character-advanced-settings');
+                const arrowSpan = document.getElementById('char-advanced-arrow');
+                if (settingsDiv.style.display === 'none') {
+                    settingsDiv.style.display = 'block';
+                    arrowSpan.textContent = '▲';
+                } else {
+                    settingsDiv.style.display = 'none';
+                    arrowSpan.textContent = '▼';
+                }
+            }
+
+            // 这里存放我们定义好的三种模式的参数
+            const PARAM_PRESETS = {
+                default: { temperature: 0.8, topP: 0.95, topK: 0, frequencyPenalty: 0, presencePenalty: 0 },
+                assist: { temperature: 0.4, topP: 0.3, topK: 10, frequencyPenalty: 0.2, presencePenalty: 0.2 },
+                companion: { temperature: 0.9, topP: 0.9, topK: 0, frequencyPenalty: 0, presencePenalty: 0 }
+            };
+
+            // 这个函数用来把一个角色的性格参数，显示到滑杆和开关上
+            function applyCharParamsToEditor(params) {
+                params = params || PARAM_PRESETS.default; // 如果没有参数，就用默认的
+                const modeSelect = document.getElementById('character-param-mode');
+                const customParamsDiv = document.getElementById('character-custom-params');
+
+                modeSelect.value = params.mode || 'default';
+
+                const currentValues = (params.mode === 'custom') ? params : (PARAM_PRESETS[params.mode] || PARAM_PRESETS.default);
+
+                // 更新所有滑杆和数值显示
+                document.getElementById('char-temperature').value = currentValues.temperature;
+                document.getElementById('char-temp-value').textContent = currentValues.temperature.toFixed(2);
+                document.getElementById('char-top-p').value = currentValues.topP;
+                document.getElementById('char-topp-value').textContent = currentValues.topP.toFixed(2);
+                document.getElementById('char-top-k').value = currentValues.topK;
+                document.getElementById('char-topk-value').textContent = currentValues.topK;
+                document.getElementById('char-freq-penalty').value = currentValues.frequencyPenalty;
+                document.getElementById('char-freq-value').textContent = currentValues.frequencyPenalty.toFixed(2);
+                document.getElementById('char-presence-penalty').value = currentValues.presencePenalty;
+                document.getElementById('char-pres-value').textContent = currentValues.presencePenalty.toFixed(2);
+
+                if (params.mode === 'custom') {
+                    customParamsDiv.style.display = 'block';
+                } else {
+                    customParamsDiv.style.display = 'none';
+                }
+            }
+
+            // 这个函数用来把滑杆和开关上的设置，收集起来准备保存
+            function collectCharParamsFromEditor() {
+                const mode = document.getElementById('character-param-mode').value;
+                const aiParams = { mode: mode };
+
+                if (mode === 'custom') {
+                    aiParams.temperature = parseFloat(document.getElementById('char-temperature').value);
+                    aiParams.topP = parseFloat(document.getElementById('char-top-p').value);
+                    aiParams.topK = parseInt(document.getElementById('char-top-k').value);
+                    aiParams.frequencyPenalty = parseFloat(document.getElementById('char-freq-penalty').value);
+                    aiParams.presencePenalty = parseFloat(document.getElementById('char-presence-penalty').value);
+                } else {
+                    // 如果不是自定义，就把预设的参数也存一份进去，方便调用
+                    Object.assign(aiParams, PARAM_PRESETS[mode] || PARAM_PRESETS.default);
+                }
+                return aiParams;
+            }
+
+            // 绑定所有事件！
+            function setupCharParamListeners() {
+                const advancedSettingsBtn = document.getElementById('toggle-advanced-settings-btn');
+                if (advancedSettingsBtn) {
+                    advancedSettingsBtn.addEventListener('click', toggleCharacterAdvancedSettings);
+                }
+                // 监听模式下拉菜单的变化
+                document.getElementById('character-param-mode').addEventListener('change', (e) => {
+                    const mode = e.target.value;
+                    const customParamsDiv = document.getElementById('character-custom-params');
+                    if (mode === 'custom') {
+                        customParamsDiv.style.display = 'block';
+                    } else {
+                        customParamsDiv.style.display = 'none';
+                        // 如果切换到预设模式，就立刻把预设值应用到界面上
+                        applyCharParamsToEditor({ mode: mode, ...PARAM_PRESETS[mode] });
+                    }
+                });
+
+                // 监听所有滑杆的拖动
+                ['char-temperature', 'char-top-p', 'char-top-k', 'char-freq-penalty', 'char-presence-penalty'].forEach(id => {
+                    const slider = document.getElementById(id);
+                    if (slider) {
+                        slider.addEventListener('input', (e) => {
+                            const valueId = id.replace('char-temperature', 'char-temp-value')
+                                .replace('char-top-p', 'char-topp-value')
+                                .replace('char-top-k', 'char-topk-value')
+                                .replace('char-freq-penalty', 'char-freq-value')
+                                .replace('char-presence-penalty', 'char-pres-value');
+                            const valueDisplay = document.getElementById(valueId);
+                            if (valueDisplay) {
+                                valueDisplay.textContent = parseFloat(e.target.value).toFixed(2);
+                            }
+                        });
+                    }
+                });
             }
 
             function setupEventListeners() {
@@ -3906,6 +4076,7 @@
                     }
                     updateSchedulePage();
                 });
+                setupCharParamListeners();
             }
 
             function updateSendButtonState() { const hasText = ELS.chatInput.value.trim().length > 0; ELS.sendBtn.disabled = !hasText; }
@@ -4045,7 +4216,7 @@
                 let responseText;
                 try {
                     // 尝试调用主API
-                    responseText = await callAPI(proxy, systemPrompt, history, character.model);
+                    responseText = await callAPI(proxy, systemPrompt, history, character.model, character);
                     await processAIResponse(responseText, thinkingBubbleId, character);
                 } catch (mainError) {
                     console.error("Main API failed:", mainError);
@@ -4071,7 +4242,7 @@
                             const backupSystemPrefix = userProfileString + backupSystemInfo;
                             const backupSystemPrompt = systemPrefix + `${character.prompt}\n\n你的任务是作为聊天伙伴对用户的记账和聊天内容做出回应。你的回应需要符合你的人设。如果用户发了图片或表情包，你要像能看到一样进行评论。你也可以发送表情包，格式为[emoji:表情包名称]，当你发送表情包时，需要单独换行。可用的表情包有：${state.emojiPacks.map(e => e.name).join('、')}。请自然地进行对话。规则如下：\n1. 发送多条消息请用换行符(\\n)分隔，这会创建多个聊天气泡。\n2. 在单条消息内部换行，请直接使用 <br> 标签。`;
                             // 尝试调用备用API
-                            responseText = await callAPI(backupProxy, backupSystemPrompt, history, character.backupModel);
+                            responseText = await callAPI(backupProxy, backupSystemPrompt, history, character.backupModel, character);
 
                             // 5. 【关键修改】备用API成功后，用它的结果更新【它自己】的“思考中”气泡
                             await processAIResponse(responseText, backupBubbleId, character);
@@ -4088,49 +4259,49 @@
                 }
             }
 
-async function processAIResponse(text, bubbleId, character) {
-    const aiReplies = text.split('\n').map(r => r.trim()).filter(Boolean);
+            async function processAIResponse(text, bubbleId, character) {
+                const aiReplies = text.split('\n').map(r => r.trim()).filter(Boolean);
 
-    if (aiReplies.length > 0) {
-        for (let i = 0; i < aiReplies.length; i++) {
-            let reply = aiReplies[i];
-            const isFirstMessage = (i === 0);
+                if (aiReplies.length > 0) {
+                    for (let i = 0; i < aiReplies.length; i++) {
+                        let reply = aiReplies[i];
+                        const isFirstMessage = (i === 0);
 
-            if (!isFirstMessage) {
-                await new Promise(resolve => setTimeout(resolve, Math.random() * 600 + 200));
-            }
+                        if (!isFirstMessage) {
+                            await new Promise(resolve => setTimeout(resolve, Math.random() * 600 + 200));
+                        }
 
-            const emojiRegex = /\[emoji:(.*?)\]/;
-            const emojiMatch = reply.match(emojiRegex);
-            
-            if (emojiMatch) {
-                const emojiName = emojiMatch[1];
-                const emoji = state.emojiPacks.find(e => e.name === emojiName);
+                        const emojiRegex = /\[emoji:(.*?)\]/;
+                        const emojiMatch = reply.match(emojiRegex);
 
-                if (emoji) {
-                    if (isFirstMessage) {
-                        await updateThinkingBubbleAsEmoji(bubbleId, emoji, character.id);
-                    } else {
-                        await addAIEmojiMessage(emoji, character.id);
+                        if (emojiMatch) {
+                            const emojiName = emojiMatch[1];
+                            const emoji = state.emojiPacks.find(e => e.name === emojiName);
+
+                            if (emoji) {
+                                if (isFirstMessage) {
+                                    await updateThinkingBubbleAsEmoji(bubbleId, emoji, character.id);
+                                } else {
+                                    await addAIEmojiMessage(emoji, character.id);
+                                }
+                            }
+
+                            const remainingText = reply.replace(emojiRegex, '').trim();
+                            if (remainingText) {
+                                await addAIMessage(remainingText, character.id);
+                            }
+                        } else {
+                            if (isFirstMessage) {
+                                await updateThinkingBubble(bubbleId, reply, character.id);  // 修复：添加 bubbleId
+                            } else {
+                                await addAIMessage(reply, character.id);
+                            }
+                        }
                     }
-                }
-
-                const remainingText = reply.replace(emojiRegex, '').trim();
-                if (remainingText) {
-                    await addAIMessage(remainingText, character.id);
-                }
-            } else {
-                if (isFirstMessage) {
-                    await updateThinkingBubble(bubbleId, reply, character.id);  // 修复：添加 bubbleId
                 } else {
-                    await addAIMessage(reply, character.id);
+                    await updateThinkingBubble(bubbleId, "[AI没有返回任何内容]", character.id, true);  // 修复：添加 bubbleId
                 }
             }
-        }
-    } else {
-        await updateThinkingBubble(bubbleId, "[AI没有返回任何内容]", character.id, true);  // 修复：添加 bubbleId
-    }
-}
 
             // 添加新函数：
             async function updateThinkingBubbleAsEmoji(bubbleId, emoji, senderId) {
@@ -4230,16 +4401,28 @@ async function processAIResponse(text, bubbleId, character) {
                 return { context, tokens: currentTokens };
             }
 
-            async function callAPI(proxy, systemPrompt, history, model) {
+            async function callAPI(proxy, systemPrompt, history, model, character) { // <--- 多了一个 character 参数
+                // 从角色信息里读取他的专属性格参数，如果不存在则使用默认预设值
+                const params = character.aiParams || PARAM_PRESETS.default;
+
                 const res = await fetch(`${proxy.url}/v1/chat/completions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${proxy.apiKey}` },
                     body: JSON.stringify({
                         model: model,
                         messages: [{ role: 'system', content: systemPrompt }, ...history],
-                        temperature: 0.8
+
+                        // --- 核心修改在这里！---
+                        // 把从角色对象中读取的性格参数放在这里
+                        temperature: params.temperature,
+                        top_p: params.topP,
+                        top_k: params.topK,
+                        frequency_penalty: params.frequencyPenalty,
+                        presence_penalty: params.presencePenalty
                     })
                 });
+
+                // --- 函数后面已有的错误处理和返回数据的代码（保持不变）---
                 if (!res.ok) {
                     const errorText = await res.text();
                     let errorMessage = '未知API错误';
@@ -4251,6 +4434,7 @@ async function processAIResponse(text, bubbleId, character) {
                     }
                     throw new Error(errorMessage);
                 }
+
                 const data = await res.json();
                 return data.choices[0].message.content;
             }
@@ -6101,7 +6285,7 @@ async function processAIResponse(text, bubbleId, character) {
                         if (data.aiCharacters) await db.aiCharacters.bulkPut(data.aiCharacters);
                         if (data.currencies) await db.currencies.bulkPut(data.currencies);
                         if (data.schedules) await db.schedules.bulkPut(data.schedules);
-                        if (data.emojiPacks) await db.emojiPacks.bulkPut(data.emojiPacks); 
+                        if (data.emojiPacks) await db.emojiPacks.bulkPut(data.emojiPacks);
                         alert('导入成功！页面将刷新。');
                         location.reload();
                     } catch (err) { alert(`导入失败: ${err.message}`); }
@@ -6260,6 +6444,7 @@ async function processAIResponse(text, bubbleId, character) {
                     populateModelsForProxy('character-editor-proxy', 'character-editor-model', char.proxyId, char.model);
                     backupProxySelect.value = char.backupProxyId;
                     populateModelsForProxy('character-editor-backup-proxy', 'character-editor-backup-model', char.backupProxyId, char.backupModel);
+                    applyCharParamsToEditor(char.aiParams);
                 } else {
                     title.textContent = "添加新角色";
                     name.value = '';
@@ -6269,10 +6454,40 @@ async function processAIResponse(text, bubbleId, character) {
                     backupProxySelect.value = '';
                     modelSelect.innerHTML = '<option value="">-- 请先选API --</option>';
                     backupModelSelect.innerHTML = '<option value="">-- 请先选API --</option>';
+                    applyCharParamsToEditor(null);
                 }
                 modal.classList.add('visible');
             }
-            async function saveCharacter() { const charData = { name: document.getElementById('character-editor-name').value, avatar: document.getElementById('character-editor-avatar-preview').src, prompt: document.getElementById('character-editor-prompt').value, proxyId: parseInt(document.getElementById('character-editor-proxy').value) || null, model: document.getElementById('character-editor-model').value, backupProxyId: parseInt(document.getElementById('character-editor-backup-proxy').value) || null, backupModel: document.getElementById('character-editor-backup-model').value }; if (editingCharId) { charData.id = editingCharId; await db.aiCharacters.put(charData); const index = state.characters.findIndex(c => c.id === editingCharId); state.characters[index] = charData; } else { const id = await db.aiCharacters.add(charData); state.characters.push({ ...charData, id }); } renderCharacterList(); renderChatMessages(); document.getElementById('character-editor-modal').classList.remove('visible'); }
+            async function saveCharacter() {
+                const characterData = {
+                    name: document.getElementById('character-editor-name').value.trim(),
+                    avatar: document.getElementById('character-editor-avatar-preview').src,
+                    prompt: document.getElementById('character-editor-prompt').value.trim(),
+                    proxyId: parseInt(document.getElementById('character-editor-proxy').value) || null,
+                    model: document.getElementById('character-editor-model').value,
+                    backupProxyId: parseInt(document.getElementById('character-editor-backup-proxy').value) || null,
+                    backupModel: document.getElementById('character-editor-backup-model').value,
+                    aiParams: collectCharParamsFromEditor()
+                };
+
+                if (editingCharId) {
+                    await db.aiCharacters.update(editingCharId, characterData);
+
+                    const index = state.characters.findIndex(c => c.id === editingCharId);
+                    if (index !== -1) {
+                        state.characters[index] = { ...state.characters[index], ...characterData };
+                    }
+                } else {
+                    const id = await db.aiCharacters.add(characterData);
+                    state.characters.push({ ...characterData, id });
+                }
+
+                // 3. 收尾工作（这部分也是正确的）
+                renderCharacterList();
+                renderChatMessages();
+                document.getElementById('character-editor-modal').classList.remove('visible');
+                editingCharId = null; // 清空正在编辑的ID
+            }
             async function deleteCharacter(id) { if (confirm('确定要删除这个角色吗？')) { await db.aiCharacters.delete(id); state.characters = state.characters.filter(c => c.id !== id); renderCharacterList(); renderChatMessages(); } }
 
             let currentlyEditingCurrencyCode = null;
@@ -6524,4 +6739,5 @@ async function processAIResponse(text, bubbleId, character) {
         });
     </script>
 </body>
+
 </html>
