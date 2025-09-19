@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -1323,6 +1322,8 @@
 
         .time-input[type=number] {
             -moz-appearance: textfield;
+            -webkit-appearance: none;
+            appearance: none;
         }
 
         .time-input:focus {
@@ -4335,11 +4336,15 @@
             }
 
             function buildContext(maxTokens) {
-                let context = []; let currentTokens = 0; const reversedMessages = [...state.messages].reverse();
+                let context = [];
+                let currentTokens = 0;
+                const reversedMessages = [...state.messages].reverse();
                 const { systemPromptSettings } = state.config;
+                let lastDateStr = null; // 用来记住上一条已成功添加的消息的日期
 
                 for (const msg of reversedMessages) {
-                    let content; let msgTokens = 0;
+                    let content;
+                    let msgTokens = 0;
                     const role = msg.role === 'assistant' ? 'assistant' : 'user';
 
                     if (msg.type === 'transaction') {
@@ -4381,7 +4386,22 @@
                         msgTokens = content.length * 2;
                     }
 
-                    if (currentTokens + msgTokens <= maxTokens) {
+                    // --- 智能时间戳的核心逻辑 ---
+                    const msgDate = new Date(msg.timestamp);
+                    const currentDateStr = `${msgDate.getFullYear()}/${String(msgDate.getMonth() + 1).padStart(2, '0')}/${String(msgDate.getDate()).padStart(2, '0')}`;
+
+                    let dateMarkerContent = null;
+                    let dateMarkerTokens = 0;
+
+                    // 检查当前消息的日期是否和上一条不同，如果是，则准备插入分割线
+                    if (currentDateStr !== lastDateStr) {
+                        dateMarkerContent = `\n--- ${currentDateStr} ---\n`;
+                        dateMarkerTokens = dateMarkerContent.length * 2;
+                    }
+
+                    // 检查加上分割线（如果需要）和消息本身后，是否会超出token限制
+                    if (currentTokens + msgTokens + dateMarkerTokens <= maxTokens) {
+                        // 先添加消息本身
                         const finalRole = (msg.type !== 'text' && msg.role === 'user') ? 'user' : role;
                         const messageForContext = { role: finalRole, content };
 
@@ -4391,10 +4411,19 @@
                                 messageForContext.character_name = character.name;
                             }
                         }
-
                         context.unshift(messageForContext);
                         currentTokens += msgTokens;
+
+                        // 如果准备了分割线，就把它添加到消息的上方
+                        if (dateMarkerContent) {
+                            context.unshift({ role: 'system', content: dateMarkerContent });
+                            currentTokens += dateMarkerTokens;
+                        }
+
+                        // 成功添加后，更新“上一条消息的日期”
+                        lastDateStr = currentDateStr;
                     } else {
+                        // 如果空间不足，则停止添加任何新消息
                         break;
                     }
                 }
@@ -6739,5 +6768,4 @@
         });
     </script>
 </body>
-
 </html>
