@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Cava记事本1.3.2beta</title>
+    <title>Cava记事本1.3.5beta</title>
     <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.12/cropper.min.css">
@@ -3412,6 +3413,154 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+
+            async function generateDiary() {
+                if (!state.currentDiaryCharId || !state.currentDiaryDate) {
+                    alert('请先选择角色');
+                    return;
+                }
+
+                const character = state.characters.find(c => c.id === state.currentDiaryCharId);
+                if (!character) {
+                    alert('未找到选中的角色');
+                    return;
+                }
+
+                const proxy = state.proxies.find(p => p.id === character.proxyId);
+                if (!proxy || !character.model) {
+                    alert(`角色 "${character.name}" 未配置API或模型`);
+                    return;
+                }
+
+                // 显示加载状态
+                const contentArea = document.getElementById('diary-content-area-inline');
+                if (contentArea) {
+                    contentArea.innerHTML = `
+            <div style="display: flex; justify-content: center; align-items: center; padding: 40px; flex-direction: column;">
+                <div class="typing-indicator"><span>.</span><span>.</span><span>.</span></div>
+                <p style="margin-top: 15px; color: var(--text-secondary);">正在生成日记...</p>
+            </div>
+        `;
+                }
+
+                try {
+                    // 1. 准备所有需要替换的变量
+                    // 这里的 state.currentDiaryDate 就是你日历上点击的那一天，是正确的！
+                    const dateStr = `${state.currentDiaryDate.getFullYear()}年${state.currentDiaryDate.getMonth() + 1}月${state.currentDiaryDate.getDate()}日`;
+                    const userId = state.config.userId || '用户';
+                    const charName = character.name;
+
+                    // 2. 构建用户信息字符串
+                    let userProfileString = '';
+                    if (state.config.userId || state.config.userGender || state.config.userBio) {
+                        userProfileString += "[用户信息]\n";
+                        if (state.config.userId) userProfileString += `- ID: ${state.config.userId}\n`;
+                        if (state.config.userGender) userProfileString += `- 性别: ${state.config.userGender}\n`;
+                        if (state.config.userBio) userProfileString += `- 简介: ${state.config.userBio}\n`;
+                        userProfileString += '\n';
+                    }
+
+                    // --- 核心修改：拆分提示词 ---
+
+                    // 3. 准备【系统提示词】，只包含不变的角色设定和用户信息
+                    const systemPromptForAPI = `${character.prompt}\n\n${userProfileString}`;
+
+                    // 4. 准备【最后的用户指令】，包含具体的写日记任务
+                    const latestDiaryPromptTemplate = state.config.diaryPrompt; // 从数据库获取最新的模板
+                    const finalInstruction = latestDiaryPromptTemplate
+                        .replace(/{char}/g, charName)
+                        .replace(/{user}/g, userId)
+                        .replace(/{date}/g, dateStr);
+
+                    const history = buildContext(8000).context;
+
+
+                    const params = character.aiParams || {
+                        temperature: 0.9, topP: 0.95, topK: 0, frequencyPenalty: 0, presencePenalty: 0
+                    };
+
+                    console.log('正在调用日记生成API...');
+
+                    const messagesForAPI = [
+                        { role: 'system', content: systemPromptForAPI }, 
+                        ...history,                                     // 中间的对话历史
+                        { role: 'user', content: finalInstruction }      // 结尾的最终指令！
+                    ];
+
+                    const response = await fetch(`${proxy.url}/v1/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${proxy.apiKey}`
+                        },
+                        body: JSON.stringify({
+                            model: character.model,
+                            messages: messagesForAPI, 
+                            temperature: params.temperature,
+                            top_p: params.topP,
+                            top_k: params.topK,
+                            frequency_penalty: params.frequencyPenalty,
+                            presence_penalty: params.presencePenalty,
+                            max_tokens: 3000
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(await response.text());
+                    }
+
+                    const data = await response.json();
+                    const diaryContent = data.choices[0].message.content;
+                    console.log('日记生成成功！');
+
+                    const dateStrForDB = `${state.currentDiaryDate.getFullYear()}-${String(state.currentDiaryDate.getMonth() + 1).padStart(2, '0')}-${String(state.currentDiaryDate.getDate()).padStart(2, '0')}`;
+                    const existingDiary = state.diaries.find(d => d.date === dateStrForDB && d.charId === state.currentDiaryCharId);
+
+                    if (existingDiary) {
+                        existingDiary.content = diaryContent;
+                        existingDiary.timestamp = Date.now();
+                        await db.diaries.put(existingDiary);
+                    } else {
+                        const newDiary = {
+                            date: dateStrForDB,
+                            charId: state.currentDiaryCharId,
+                            content: diaryContent,
+                            timestamp: Date.now()
+                        };
+                        const id = await db.diaries.add(newDiary);
+                        state.diaries.push({ ...newDiary, id });
+                    }
+
+                    updateDiaryContentArea(state.currentDiaryDate);
+
+                } catch (error) {
+                    console.error('生成日记失败:', error);
+                    alert('生成日记失败：' + error.message);
+                    updateDiaryContentArea(state.currentDiaryDate);
+                }
+            }
+
+
+
+            async function deleteDiary() {
+                if (!confirm('确定要删除这篇日记吗？')) {
+                    return;
+                }
+
+                const dateStr = `${state.currentDiaryDate.getFullYear()}-${String(state.currentDiaryDate.getMonth() + 1).padStart(2, '0')}-${String(state.currentDiaryDate.getDate()).padStart(2, '0')}`;
+                const diary = state.diaries.find(d =>
+                    d.date === dateStr && d.charId === state.currentDiaryCharId
+                );
+
+                if (diary) {
+                    await db.diaries.delete(diary.id);
+                    state.diaries = state.diaries.filter(d => d.id !== diary.id);
+                    // 删除后，刷新日记区域
+                    updateDiaryContentArea(state.currentDiaryDate);
+                }
+            }
+
             const db = new Dexie('WarmBookkeepingDB_v10'); // Upped version for schema change
             db.version(10).stores({
                 appConfig: 'id',
@@ -3422,7 +3571,8 @@
                 currencies: 'code, name, rate',
                 transactionTemplates: '++id, name, type, category, amount, currency, remark',
                 schedules: '++id, timestamp, title, description, importance, deadline, eventType, completed, recurrence, endDate, completedDates',
-                emojiPacks: '++id, name, image, timestamp'  // 新增这行！
+                emojiPacks: '++id, name, image, timestamp',
+                diaries: '++id, date, charId, content, timestamp'
             });
 
             const DEFAULT_SYSTEM_PROMPTS = {
@@ -3435,7 +3585,7 @@
             };
 
             let state = {
-                config: {}, proxies: [], characters: [], messages: [], transactions: [], currencies: [], schedules: [], emojiPacks: [],
+                config: {}, proxies: [], characters: [], messages: [], transactions: [], currencies: [], schedules: [], emojiPacks: [], diaries: [],
                 currentTransaction: { type: 'expense', category: null, amountStr: '0', currency: 'RMB' },
                 currentSchedule: {},
                 calendarState: { year: new Date().getFullYear(), month: new Date().getMonth(), selectedDate: null, mode: 'deadline' },
@@ -3448,6 +3598,8 @@
                 schedulePageIndex: 0,
                 messagesDisplayed: 50,
                 isLoadingMore: false,
+                currentDiaryCharId: null,
+                currentDiaryDate: null
             };
 
             const ELS = {
@@ -3489,8 +3641,9 @@
                 populateLedgerCurrencyFilter();
             }
 
+
             async function loadDataFromDB() {
-                const [config, proxies, characters, messages, transactions, currencies, schedules, emojiPacks] = await Promise.all([
+                const [config, proxies, characters, messages, transactions, currencies, schedules, emojiPacks, diaries] = await Promise.all([
                     db.appConfig.get('main'),
                     db.apiProxies.toArray(),
                     db.aiCharacters.toArray(),
@@ -3498,18 +3651,35 @@
                     db.transactions.orderBy('timestamp').toArray(),
                     db.currencies.toArray(),
                     db.schedules.toArray(),
-                    db.emojiPacks.toArray()
+                    db.emojiPacks.toArray(),
+                    db.diaries.toArray()
                 ]);
 
-                const baseConfig = { id: 'main', chatName: '我的记事本', chatAvatar: DEFAULT_AVATAR, maxTokens: 4096, background: '', theme: 'default', userId: '', userGender: '', userBio: '', systemPromptSettings: DEFAULT_SYSTEM_PROMPTS };
+                const defaultDiaryPrompt = `请你写一篇{char}的视角中与{user}在{date}的这一天高度相关的日记，主要是你在这一天的对话中，对{user}行为的心理活动经过和情感变化，结合过往对话记录来写。日记写作风格需要按照依照{char}的性格特点。你在写日记时，对{char}统一使用第一人称「我」（如“我收到了她的消息”），对{user}则一般使用第三人称（如“她今天买奶茶花了二十块”），但偶尔插入对{user}第二人称直白的话（如“我想让你知道”），加强情感冲击。直接以“{date}，记录者：{char}”开头，2000字左右~`;
+
+                const baseConfig = {
+                    id: 'main',
+                    chatName: '我的记事本',
+                    chatAvatar: DEFAULT_AVATAR,
+                    maxTokens: 4096,
+                    background: '',
+                    theme: 'default',
+                    userId: '',
+                    userGender: '',
+                    userBio: '',
+                    systemPromptSettings: DEFAULT_SYSTEM_PROMPTS,
+                    diaryPrompt: defaultDiaryPrompt // <--- 新增这一行
+                };
+
                 state.config = { ...baseConfig, ...config, systemPromptSettings: { ...DEFAULT_SYSTEM_PROMPTS, ...(config ? config.systemPromptSettings : {}) } };
 
-                // --- 核心修改在这里！---
-                // 我们为每个角色都加上一个 aiParams 口袋，如果它还没有的话
+                // 从数据库加载日记提示词，如果不存在则使用默认值
+                currentDiaryPrompt = state.config.diaryPrompt || defaultDiaryPrompt;
+
                 state.characters = characters.map(char => ({
                     ...char,
                     aiParams: char.aiParams || {
-                        mode: 'default', // 'default', 'assist', 'companion', 'custom'
+                        mode: 'default',
                         temperature: 0.8,
                         topP: 0.95,
                         topK: 0,
@@ -3523,6 +3693,7 @@
                 state.transactions = transactions;
                 state.schedules = schedules || [];
                 state.emojiPacks = emojiPacks || [];
+                state.diaries = diaries || [];
 
                 if (currencies.length === 0) {
                     const preset = { code: 'HKD', name: '港币', rate: 0.92 };
@@ -4077,6 +4248,120 @@
                     }
                     updateSchedulePage();
                 });
+
+                // 日记模态框事件监听
+                document.getElementById('close-diary-modal').addEventListener('click', () => {
+                    document.getElementById('diary-modal').classList.remove('visible');
+                });
+
+                document.getElementById('edit-diary-prompt-btn').addEventListener('click', () => {
+                    document.getElementById('diary-system-prompt').value = currentDiaryPrompt;
+                    document.getElementById('diary-prompt-modal').classList.add('visible');
+                });
+
+                document.getElementById('save-diary-prompt').addEventListener('click', async () => {
+                    const newPrompt = document.getElementById('diary-system-prompt').value;
+                    // 直接调用 updateConfig 函数，它会同时更新 state 和数据库
+                    await updateConfig('diaryPrompt', newPrompt);
+                    console.log('提示词已更新并存入数据库:', state.config.diaryPrompt);
+                    alert('提示词已成功保存！');
+                    document.getElementById('diary-prompt-modal').classList.remove('visible');
+                });
+
+
+
+                document.querySelector('#diary-prompt-modal .cancel-btn').addEventListener('click', () => {
+                    document.getElementById('diary-prompt-modal').classList.remove('visible');
+                });
+
+                document.getElementById('diary-char-select').addEventListener('change', async (e) => {
+                    const charId = parseInt(e.target.value);
+                    if (charId && state.currentDiaryDate) {
+                        state.currentDiaryCharId = charId;
+                        await loadDiaryForDate(state.currentDiaryDate, charId);
+                    }
+                });
+
+                document.getElementById('generate-diary-btn').addEventListener('click', generateDiary);
+                document.getElementById('delete-diary-btn').addEventListener('click', deleteDiary);
+
+                // 日记相关函数
+                async function showDiaryModal(date) {
+                    state.currentDiaryDate = date;
+
+                    // 设置标题
+                    const dateStr = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+                    document.getElementById('diary-modal-title').textContent = `${dateStr}的日记`;
+
+                    // 填充角色选择器
+                    const charSelect = document.getElementById('diary-char-select');
+                    charSelect.innerHTML = '<option value="">选择角色</option>';
+                    state.characters.forEach(char => {
+                        const option = document.createElement('option');
+                        option.value = char.id;
+                        option.textContent = char.name;
+                        charSelect.appendChild(option);
+                    });
+
+                    // 如果有默认角色，选择第一个
+                    if (state.characters.length > 0 && !state.currentDiaryCharId) {
+                        state.currentDiaryCharId = state.characters[0].id;
+                        charSelect.value = state.currentDiaryCharId;
+                    } else if (state.currentDiaryCharId) {
+                        charSelect.value = state.currentDiaryCharId;
+                    }
+
+                    // 加载日记
+                    if (state.currentDiaryCharId) {
+                        await loadDiaryForDate(date, state.currentDiaryCharId);
+                    } else {
+                        showDiaryEmptyState();
+                    }
+
+                    document.getElementById('diary-modal').classList.add('visible');
+                }
+
+                async function loadDiaryForDate(date, charId) {
+                    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                    const diary = state.diaries.find(d => d.date === dateStr && d.charId === charId);
+
+                    if (diary) {
+                        showDiaryContent(diary.content);
+                    } else {
+                        showDiaryEmptyState();
+                    }
+                }
+
+                function showDiaryContent(content) {
+                    document.getElementById('diary-empty-state').style.display = 'none';
+                    document.getElementById('diary-loading').style.display = 'none';
+                    document.getElementById('diary-display').style.display = 'block';
+                    document.getElementById('diary-text').textContent = content;
+
+                    const char = state.characters.find(c => c.id === state.currentDiaryCharId);
+                    if (char) {
+                        document.getElementById('generate-diary-btn').textContent = `📔 生成${char.name}的日记`;
+                    }
+                }
+
+                function showDiaryEmptyState() {
+                    document.getElementById('diary-display').style.display = 'none';
+                    document.getElementById('diary-loading').style.display = 'none';
+                    document.getElementById('diary-empty-state').style.display = 'block';
+
+                    const char = state.characters.find(c => c.id === state.currentDiaryCharId);
+                    if (char && state.currentDiaryDate) {
+                        const dateStr = `${state.currentDiaryDate.getFullYear()}年${state.currentDiaryDate.getMonth() + 1}月${state.currentDiaryDate.getDate()}日`;
+                        document.getElementById('generate-diary-btn').textContent = `📔 生成${char.name}${dateStr}的日记`;
+                    }
+                }
+
+                function showDiaryLoading() {
+                    document.getElementById('diary-empty-state').style.display = 'none';
+                    document.getElementById('diary-display').style.display = 'none';
+                    document.getElementById('diary-loading').style.display = 'block';
+                }
+
                 setupCharParamListeners();
             }
 
@@ -4437,6 +4722,7 @@
                 }
                 return { context, tokens: currentTokens };
             }
+
 
             async function callAPI(proxy, systemPrompt, history, model, character) { // <--- 多了一个 character 参数
                 // 从角色信息里读取他的专属性格参数，如果不存在则使用默认预设值
@@ -5878,44 +6164,152 @@
 
             function renderEventsForDate(dateStr, events) {
                 const listContainer = document.getElementById('calendar-event-list');
-                // 1. 总是先清空容器，这是一个好习惯，可以避免很多奇怪的问题
-                listContainer.innerHTML = '';
+                listContainer.innerHTML = ''; // 清空
 
-                // 2. 拆分日期字符串，然后按正确的中文格式重新组合
-                const parts = dateStr.split('-'); // 例如，将 '2025-09-12' 拆分为数组 ['2025', '09', '12']
-                const year = parts[0];
-                const month = Number(parts[1]); // Number() 会将 '09' 变为 9
-                const day = Number(parts[2]);
-                const formattedDate = `${year}年${month}月${day}日`; // 拼接成 "2025年9月12日"
+                // --- 事件显示部分 (和原来一样) ---
+                const parts = dateStr.split('-');
+                const year = parseInt(parts[0]);
+                const month = parseInt(parts[1]);
+                const day = parseInt(parts[2]);
+                const formattedDate = `${year}年${month}月${day}日`;
 
-                // 3. 创建标题元素并添加到容器中
                 const titleDiv = document.createElement('div');
                 titleDiv.className = 'schedule-section-title';
                 titleDiv.textContent = `${formattedDate} 的事件`;
                 listContainer.appendChild(titleDiv);
 
-                // 4. 检查是否有事件，并添加对应的内容
                 if (!events || events.length === 0) {
                     const emptyDiv = document.createElement('div');
                     emptyDiv.className = 'empty-state';
                     emptyDiv.textContent = '当天没有事件';
                     listContainer.appendChild(emptyDiv);
-                    return;
+                } else {
+                    events.sort((a, b) => b.importance - a.importance).forEach(s => {
+                        const item = document.createElement('div');
+                        item.className = 'event-item';
+                        let timeStr = '';
+                        if (s.deadline && s.deadline.hour !== null && s.deadline.minute !== null) {
+                            timeStr = `${String(s.deadline.hour).padStart(2, '0')}:${String(s.deadline.minute).padStart(2, '0')}`;
+                        }
+                        item.innerHTML = `<div class="event-title">${s.title}</div><div class="event-time">${timeStr}</div>`;
+                        listContainer.appendChild(item);
+                    });
                 }
 
-                // 5. 如果有事件，则逐个创建并添加到容器中（这部分逻辑和原来保持一致）
-                events.sort((a, b) => b.importance - a.importance).forEach(s => {
-                    const item = document.createElement('div');
-                    item.className = 'event-item';
-                    let timeStr = '';
-                    if (s.deadline && s.deadline.hour !== null && s.deadline.minute !== null) {
-                        timeStr = `${String(s.deadline.hour).padStart(2, '0')}:${String(s.deadline.minute).padStart(2, '0')}`;
-                    }
-                    item.innerHTML = `<div class="event-title">${s.title}</div><div class="event-time">${timeStr}</div>`;
-                    listContainer.appendChild(item);
-                });
+                // --- 新增：日记功能区 ---
+                const hr = document.createElement('hr'); // 添加一条分割线
+                hr.style.cssText = "border: none; border-top: 1px solid var(--border-color); margin: 20px 0;";
+                listContainer.appendChild(hr);
+
+                const diaryContainer = document.createElement('div');
+                diaryContainer.id = 'diary-section-container';
+                listContainer.appendChild(diaryContainer);
+
+                // 更新 state 中的当前日期
+                state.currentDiaryDate = new Date(year, month - 1, day);
+
+                // 调用辅助函数来渲染日记UI
+                renderDiarySection(diaryContainer, state.currentDiaryDate);
             }
 
+            // 辅助函数1：渲染整个日记区域
+            function renderDiarySection(container, date) {
+                const dateStr = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+
+                // 创建日记区域的 HTML 结构
+                container.innerHTML = `
+        <div class="schedule-section-title" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>${dateStr} 的日记</span>
+            <button id="edit-diary-prompt-btn-inline" style="padding: 4px 8px; font-size: 12px; border-radius: 6px; background: var(--bg-soft); border: none; cursor: pointer;">编辑提示词</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; margin: 15px 0;">
+            <label style="flex-shrink: 0;">角色：</label>
+            <select id="diary-char-select-inline" style="flex-grow: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--accent-primary); background: var(--bg-secondary); color: var(--text-primary);"></select>
+        </div>
+        <div id="diary-content-area-inline">
+            <!-- 日记内容或生成按钮会在这里动态添加 -->
+        </div>
+    `;
+
+                // 填充角色选择器
+                const charSelect = container.querySelector('#diary-char-select-inline');
+                if (state.characters.length > 0) {
+                    state.characters.forEach(char => {
+                        const option = document.createElement('option');
+                        option.value = char.id;
+                        option.textContent = char.name;
+                        charSelect.appendChild(option);
+                    });
+                    // 默认选中当前角色或第一个角色
+                    if (state.currentDiaryCharId && state.characters.some(c => c.id === state.currentDiaryCharId)) {
+                        charSelect.value = state.currentDiaryCharId;
+                    } else {
+                        state.currentDiaryCharId = state.characters[0].id;
+                        charSelect.value = state.currentDiaryCharId;
+                    }
+                }
+
+                // --- 绑定事件监听 ---
+
+                // 1. 绑定角色选择器的切换事件
+                charSelect.addEventListener('change', (e) => {
+                    state.currentDiaryCharId = parseInt(e.target.value);
+                    updateDiaryContentArea(date); // 切换角色后更新日记内容
+                });
+
+                // 2. 绑定“编辑提示词”按钮的点击事件
+                container.querySelector('#edit-diary-prompt-btn-inline').addEventListener('click', () => {
+                    // 每次点击时，都从 state.config中读取最新的提示词
+                    document.getElementById('diary-system-prompt').value = state.config.diaryPrompt;
+
+                    // 弹出编辑模态框
+                    document.getElementById('diary-prompt-modal').classList.add('visible');
+                });
+
+                // 初始加载日记内容
+                updateDiaryContentArea(date);
+            }
+
+
+            // 辅助函数2：更新日记内容区域（显示日记、生成按钮或加载中）
+            async function updateDiaryContentArea(date) {
+                const contentArea = document.getElementById('diary-content-area-inline');
+                if (!contentArea) return;
+
+                const dateStrForDB = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                const diary = state.diaries.find(d => d.date === dateStrForDB && d.charId === state.currentDiaryCharId);
+                const character = state.characters.find(c => c.id === state.currentDiaryCharId);
+
+                if (diary) {
+                    // 如果有日记，显示日记内容和删除按钮
+                    contentArea.innerHTML = `
+            <div id="diary-text-inline" style="background: var(--bg-soft); border-radius: 12px; padding: 20px; white-space: pre-wrap; line-height: 1.8; font-size: 15px; max-height: 400px; overflow-y: auto;"></div>
+            <button id="delete-diary-btn-inline" class="form-button" style="margin-top: 15px; background-color: var(--expense-color);">删除日记</button>
+        `;
+                    contentArea.querySelector('#diary-text-inline').textContent = diary.content;
+                    contentArea.querySelector('#delete-diary-btn-inline').addEventListener('click', deleteDiary);
+                } else {
+                    // 如果没有日记，显示生成按钮
+                    const btnText = character ? `📔 生成${character.name}的日记` : '📔 生成日记';
+                    contentArea.innerHTML = `
+            <div style="text-align: center; padding: 20px; color: var(--text-secondary);">
+                <p>暂无日记</p>
+                <button id="generate-diary-btn-inline" class="form-button" style="margin-top: 10px;">${btnText}</button>
+            </div>
+        `;
+                    contentArea.querySelector('#generate-diary-btn-inline').addEventListener('click', async () => {
+                        // 显示加载动画
+                        contentArea.innerHTML = `
+                <div style="display: flex; justify-content: center; align-items: center; padding: 40px; flex-direction: column;">
+                    <div class="typing-indicator"><span>.</span><span>.</span><span>.</span></div>
+                    <p style="margin-top: 15px; color: var(--text-secondary);">正在生成日记...</p>
+                </div>
+            `;
+                        await generateDiary(); // 调用生成日记的函数
+                        updateDiaryContentArea(date); // 生成后再次更新界面
+                    });
+                }
+            }
 
             function createScheduleItemElement(schedule) {
                 const item = document.createElement('div');
@@ -6775,5 +7169,63 @@
             init();
         });
     </script>
+    <!-- 日记模态框 -->
+    <div id="diary-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span id="diary-modal-title">日记</span>
+            </div>
+            <div class="modal-body" style="padding: 15px;">
+                <div id="diary-character-selector"
+                    style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                    <label style="flex-shrink: 0;">角色：</label>
+                    <select id="diary-char-select"
+                        style="flex-grow: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--accent-primary); background: var(--bg-secondary); color: var(--text-primary);"></select>
+                    <button id="edit-diary-prompt-btn"
+                        style="padding: 8px 12px; border-radius: 8px; background: var(--bg-soft); border: none; cursor: pointer;">编辑提示词</button>
+                </div>
+                <div id="diary-content-area">
+                    <div id="diary-empty-state"
+                        style="text-align: center; padding: 40px 20px; color: var(--text-secondary);">
+                        <p>暂无日记</p>
+                        <button id="generate-diary-btn" class="form-button" style="margin-top: 20px;">📔 生成日记</button>
+                    </div>
+                    <div id="diary-display" style="display: none;">
+                        <div id="diary-text"
+                            style="background: var(--bg-soft); border-radius: 12px; padding: 20px; white-space: pre-wrap; line-height: 1.8; font-size: 15px; max-height: 400px; overflow-y: auto;">
+                        </div>
+                        <button id="delete-diary-btn" class="form-button"
+                            style="margin-top: 15px; background-color: var(--expense-color);">删除日记</button>
+                    </div>
+                    <div id="diary-loading" style="display: none; text-align: center; padding: 40px;">
+                        <div class="typing-indicator"><span>.</span><span>.</span><span>.</span></div>
+                        <p style="margin-top: 15px; color: var(--text-secondary);">正在生成日记...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel-btn" id="close-diary-modal">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑日记提示词模态框 -->
+    <div id="diary-prompt-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">编辑日记生成提示词</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>系统提示词</label>
+                    <textarea id="diary-system-prompt" rows="10"
+                        style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--accent-primary); background: var(--bg-secondary); color: var(--text-primary);">请你写一篇{char}的视角中与{user}在{date}的这一天高度相关的日记，主要是你在这一天的对话中，对{user}行为的心理活动经过和情感变化，结合过往对话记录来写。日记写作风格需要按照依照{char}的性格特点。你在写日记时，对{char}统一使用第一人称「我」（如“我收到了她的消息”），对{user}则一般使用第三人称（如“她今天买奶茶花了二十块”），但偶尔插入对{user}第二人称直白的话（如“我想让你知道”），加强情感冲击。直接以“{date}，记录者：{char}”开头，2000字左右~</textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel-btn">取消</button>
+                <button class="save-btn" id="save-diary-prompt">保存</button>
+            </div>
+        </div>
+    </div>
 </body>
+
 </html>
